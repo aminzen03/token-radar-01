@@ -167,6 +167,18 @@ export interface LiveRow {
   mcap_tvl: number | null;
 }
 
+/** One pre-token protocol the board sets aside: it records no token, but it is a wrapped, staked or
+ * bridged product of a token that already trades, a versioned pool, or an exchange — so it is shown,
+ * never ranked as a launch. The reason names the rule that set it aside. */
+export interface SetAsideRow {
+  slug: string;
+  name: string;
+  category: string | null;
+  chains: string[];
+  tvl_usd: number;
+  reason: string;
+}
+
 /** One live peer anchoring a category's multiple. */
 export interface PeerRow {
   slug: string;
@@ -194,6 +206,12 @@ export interface RadarData {
   peers: Record<string, PeerRow[]>;
   rows: RadarRow[];
   live: LiveRow[];
+  /** The pre-token protocols set aside, largest TVL first, with the rule that set each one aside. */
+  setAside: SetAsideRow[];
+  /** How many of the set-aside protocols sit at or above the floor. */
+  setAsideAboveFloor: number;
+  /** How many protocols in the snapshot record no token at all. */
+  pretokenTotal: number;
 }
 
 /** Why the snapshot is not one this model can score. */
@@ -242,6 +260,17 @@ export function isLaunchCandidate(p: SnapshotProtocol): boolean {
   if (WRAPPED_WORD.test(p.name)) return false;
   if (EXCHANGE_PREFIX.test(p.name)) return false;
   return true;
+}
+
+/** Why a pre-token protocol is set aside instead of ranked: the first rule that excludes it, in the
+ * words the dashboard shows. A protocol that passes every rule has no reason and is a launch
+ * candidate, so this is only called on protocols isLaunchCandidate refuses. */
+export function setAsideReason(p: SnapshotProtocol): string {
+  if (p.category !== null && EXCLUDED_CATEGORIES.has(p.category)) return `${p.category} — a product of a token that already trades`;
+  if (VERSIONED.test(p.name)) return 'Versioned pool — a release of another protocol';
+  if (WRAPPED_WORD.test(p.name)) return 'Wrapped or staked product — a token that already trades';
+  if (EXCHANGE_PREFIX.test(p.name)) return 'Exchange product — the exchange already has a token';
+  return 'Set aside';
 }
 
 /** The snapshot's protocol by slug. */
@@ -510,6 +539,12 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
   const aboveFloor = board.filter((r) => !snapshot.watchlist.includes(r.slug) && r.tvl_usd >= snapshot.floor_usd).length;
   const early = board.filter((r) => !snapshot.watchlist.includes(r.slug) && r.tvl_usd < snapshot.floor_usd).length;
   const excluded = snapshot.protocols.length - board.length - snapshot.protocols.filter((p) => !isPreToken(p)).length;
+  // The set-aside: every pre-token protocol the launch rule refuses, largest TVL first, each with the
+  // rule that set it aside. They are shown on the page, never ranked as launches.
+  const setAside: SetAsideRow[] = snapshot.protocols
+    .filter((p) => isPreToken(p) && !isLaunchCandidate(p))
+    .sort((a, b) => b.tvl_usd - a.tvl_usd || (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0))
+    .map((p) => ({ slug: p.slug, name: p.name, category: p.category, chains: p.chains, tvl_usd: p.tvl_usd, reason: setAsideReason(p) }));
   const radar: RadarData = {
     as_of: snapshot.as_of,
     source: snapshot.source,
@@ -527,6 +562,9 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
     peers,
     rows: board.map((r) => radarRow(r, snapshot)),
     live,
+    setAside,
+    setAsideAboveFloor: setAside.filter((r) => r.tvl_usd >= snapshot.floor_usd).length,
+    pretokenTotal: snapshot.protocols.filter((p) => isPreToken(p)).length,
   };
   return { board, radar };
 }
